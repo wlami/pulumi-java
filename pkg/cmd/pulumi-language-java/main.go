@@ -483,7 +483,15 @@ func (host *javaLanguageHost) RunPlugin(
 ) error {
 	logging.V(5).Infof("Attempting to run java plugin in %s", req.Pwd)
 
-	if isPolicyPack(req.Pwd) {
+	// The engine sets req.Info.ProgramDirectory to the policy pack directory and
+	// req.Pwd to the Pulumi program's working directory. Check ProgramDirectory
+	// first; fall back to Pwd for the legacy unit-test path where both are the
+	// same directory.
+	policyCheckDir := req.GetInfo().GetProgramDirectory()
+	if policyCheckDir == "" {
+		policyCheckDir = req.Pwd
+	}
+	if isPolicyPack(policyCheckDir) {
 		return host.runPolicyPack(req, server)
 	}
 
@@ -1199,29 +1207,35 @@ type POMProject struct {
 func (host *javaLanguageHost) runPolicyPack(
 	req *pulumirpc.RunPluginRequest, server pulumirpc.LanguageRuntime_RunPluginServer,
 ) error {
-	logging.V(5).Infof("pulumi-language-java: running as policy pack in %s", req.Pwd)
+	// The engine sets req.Info.ProgramDirectory to the policy pack directory.
+	// Fall back to req.Pwd for the legacy unit-test path where they are equal.
+	packDir := req.GetInfo().GetProgramDirectory()
+	if packDir == "" {
+		packDir = req.Pwd
+	}
+	logging.V(5).Infof("pulumi-language-java: running as policy pack in %s", packDir)
 
-	cfg, err := loadPolicyConfig(req.Pwd)
+	cfg, err := loadPolicyConfig(packDir)
 	if err != nil {
 		return fmt.Errorf("failed to load policy manifest: %w", err)
 	}
 	if cfg.Runtime.Name != "java" {
 		return fmt.Errorf(
 			"PulumiPolicy.yaml at %s has runtime %q, expected \"java\"",
-			req.Pwd, cfg.Runtime.Name)
+			packDir, cfg.Runtime.Name)
 	}
 	if cfg.Runtime.Options.Main == "" {
 		return fmt.Errorf(
 			"PulumiPolicy.yaml at %s is missing runtime.options.main "+
 				"(set to the FQN of your policy pack class)",
-			req.Pwd)
+			packDir)
 	}
 
-	pomXMLPath := filepath.Join(req.Pwd, "pom.xml")
+	pomXMLPath := filepath.Join(packDir, "pom.xml")
 	if _, statErr := os.Stat(pomXMLPath); statErr != nil {
 		return fmt.Errorf(
 			"java policy pack at %s requires pom.xml (gradle support is not yet implemented): %w",
-			req.Pwd, statErr)
+			packDir, statErr)
 	}
 
 	closer, stdout, stderr, err := rpcutil.MakeRunPluginStreams(server, false)
@@ -1234,7 +1248,7 @@ func (host *javaLanguageHost) runPolicyPack(
 	logging.V(5).Infof("pulumi-language-java policy mode: mvn %s", strings.Join(args, " "))
 
 	cmd := exec.Command("mvn", args...)
-	cmd.Dir = req.Pwd
+	cmd.Dir = packDir
 	cmd.Env = req.Env
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
