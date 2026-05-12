@@ -1231,12 +1231,37 @@ func (host *javaLanguageHost) runPolicyPack(
 			packDir)
 	}
 
-	pomXMLPath := filepath.Join(packDir, "pom.xml")
-	if _, statErr := os.Stat(pomXMLPath); statErr != nil {
+	var (
+		executable string
+		args       []string
+		initScript string
+	)
+	if _, statErr := os.Stat(filepath.Join(packDir, "pom.xml")); statErr == nil {
+		executable = "mvn"
+		args = buildMavenPolicyExecArgs(
+			filepath.Join(packDir, "pom.xml"),
+			cfg.Runtime.Options.Main,
+		)
+	} else if hasGradleProject(packDir) {
+		var ierr error
+		initScript, ierr = writePolicyInitScript(packDir)
+		if ierr != nil {
+			return fmt.Errorf("failed to write gradle init script: %w", ierr)
+		}
+		executable = "gradle"
+		args = append([]string{"--init-script", initScript},
+			buildGradlePolicyExecArgs(packDir, cfg.Runtime.Options.Main)...)
+	} else {
 		return fmt.Errorf(
-			"java policy pack at %s requires pom.xml (gradle support is not yet implemented): %w",
-			packDir, statErr)
+			"java policy pack at %s requires pom.xml or build.gradle(.kts)",
+			packDir)
 	}
+
+	defer func() {
+		if initScript != "" {
+			_ = os.Remove(initScript)
+		}
+	}()
 
 	closer, stdout, stderr, err := rpcutil.MakeRunPluginStreams(server, false)
 	if err != nil {
@@ -1244,10 +1269,9 @@ func (host *javaLanguageHost) runPolicyPack(
 	}
 	defer closer.Close()
 
-	args := buildMavenPolicyExecArgs(pomXMLPath, cfg.Runtime.Options.Main)
-	logging.V(5).Infof("pulumi-language-java policy mode: mvn %s", strings.Join(args, " "))
+	logging.V(5).Infof("pulumi-language-java policy mode: %s %s", executable, strings.Join(args, " "))
 
-	cmd := exec.Command("mvn", args...)
+	cmd := exec.Command(executable, args...)
 	cmd.Dir = packDir
 	cmd.Env = req.Env
 	cmd.Stdout = stdout
