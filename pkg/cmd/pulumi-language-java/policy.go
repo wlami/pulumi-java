@@ -122,8 +122,9 @@ func buildGradlePolicyExecArgs(projectDir, userEntrypoint string) []string {
 // writePolicyInitScript writes a Gradle init script that injects a
 // 'pulumiPolicyRun' task into the user's project. The task uses the JavaExec
 // type to run com.pulumi.policy.internal.PolicyMain with the user-supplied
-// entrypoint class.
-func writePolicyInitScript(dir string) (string, error) {
+// entrypoint class. The script is written to a system temp directory so that
+// it is never left inside the user's project tree.
+func writePolicyInitScript(_ string) (string, error) {
 	content := `
 allprojects {
     afterEvaluate { project ->
@@ -141,11 +142,15 @@ allprojects {
     }
 }
 `
-	scriptPath := filepath.Join(dir, ".pulumi-policy-init.gradle")
-	if err := os.WriteFile(scriptPath, []byte(content), 0o644); err != nil {
+	f, err := os.CreateTemp("", "pulumi-policy-init-*.gradle")
+	if err != nil {
 		return "", err
 	}
-	return scriptPath, nil
+	defer f.Close()
+	if _, err := f.WriteString(content); err != nil {
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 // buildMavenPolicyExecArgs returns the mvn command-line that builds the user's
