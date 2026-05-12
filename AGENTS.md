@@ -4,6 +4,16 @@
 
 Pulumi Java language support: a Go-based language plugin (gRPC server), a Java code generator, and the Java SDK runtime library (`com.pulumi:pulumi`). The plugin lets the Pulumi CLI run Java programs; the codegen turns Pulumi Package schemas into typed Java SDKs.
 
+## Policy mode (Plan B addition)
+
+`pulumi-language-java` now serves two roles via `RunPlugin`:
+
+1. **Pulumi program mode** (default): the target directory contains a Pulumi program. RunPlugin invokes the user's `main` via `mvn exec:java` and the program registers Pulumi resources.
+
+2. **Policy pack mode** (new): the target directory contains `PulumiPolicy.yaml`. RunPlugin parses the manifest for `runtime.options.main`, invokes `com.pulumi.policy.internal.PolicyMain` against that class, and the user's `main` calls `PolicyPack.run(...)` to host a gRPC `Analyzer` server. The user's `pom.xml` must declare `com.pulumi:pulumi-policy` as a dependency.
+
+See `pkg/cmd/pulumi-language-java/policy.go` and `policy_integration_test.go`.
+
 ## Repo structure
 
 - `pkg/` — Go code: language plugin, code generator, executor abstraction
