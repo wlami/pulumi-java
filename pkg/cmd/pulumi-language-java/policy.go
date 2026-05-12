@@ -83,3 +83,11 @@ func loadPolicyConfig(dir string) (*PolicyConfig, error) {
 	}
 	return &cfg, nil
 }
+
+// isPolicyPack returns true iff the directory contains a regular
+// PulumiPolicy.yaml file. This is the primary signal the language plugin
+// uses to switch RunPlugin into policy mode.
+func isPolicyPack(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, manifestFileName))
+	return err == nil && info.Mode().IsRegular()
+}

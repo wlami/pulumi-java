@@ -60,3 +60,24 @@ func TestLoadPolicyConfig_WrongRuntime(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "nodejs", cfg.Runtime.Name)
 }
+
+func TestIsPolicyPack_True(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "PulumiPolicy.yaml"),
+		[]byte("runtime: java\n"),
+		0o644,
+	))
+	assert.True(t, isPolicyPack(dir))
+}
+
+func TestIsPolicyPack_FalseNoManifest(t *testing.T) {
+	assert.False(t, isPolicyPack(t.TempDir()))
+}
+
+func TestIsPolicyPack_FalseOnDirectoryAtPath(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "PulumiPolicy.yaml"), 0o755))
+	// A directory named PulumiPolicy.yaml is not a manifest.
+	assert.False(t, isPolicyPack(dir))
+}
