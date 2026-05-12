@@ -1,0 +1,4 @@
+runtime:
+  name: java
+  # options.main intentionally absent
+version: 0.0.1

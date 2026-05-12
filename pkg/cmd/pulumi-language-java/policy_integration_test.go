@@ -159,3 +159,65 @@ func TestPolicyMode_BasicMaven(t *testing.T) {
 	// host which kills the policy pack subprocess).
 	_, _ = analyzer.Cancel(ctx, &emptypb.Empty{})
 }
+
+// runPluginAndDrain drives RunPlugin against fixtureDir and reads stream
+// chunks until EOF or first error. Returns accumulated stdout and the
+// terminal stream error (nil on EOF, a gRPC error otherwise).
+func runPluginAndDrain(t *testing.T, ctx context.Context,
+	client pulumirpc.LanguageRuntimeClient, fixtureDir string,
+) ([]byte, error) {
+	t.Helper()
+	stream, err := client.RunPlugin(ctx, &pulumirpc.RunPluginRequest{
+		Pwd:  fixtureDir,
+		Info: &pulumirpc.ProgramInfo{ProgramDirectory: fixtureDir, EntryPoint: "."},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var buf []byte
+	for {
+		resp, rerr := stream.Recv()
+		if rerr != nil {
+			if rerr.Error() == "EOF" {
+				return buf, nil
+			}
+			return buf, rerr
+		}
+		if out := resp.GetStdout(); len(out) > 0 {
+			buf = append(buf, out...)
+		}
+		if out := resp.GetStderr(); len(out) > 0 {
+			buf = append(buf, out...)
+		}
+	}
+}
+
+func TestPolicyMode_MissingMainErrors(t *testing.T) {
+	fixtureDir, err := filepath.Abs("testdata/policy-packs/missing-main")
+	require.NoError(t, err)
+
+	client, cleanup := startInProcessLanguageHost(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, streamErr := runPluginAndDrain(t, ctx, client, fixtureDir)
+	require.Error(t, streamErr)
+	assert.Contains(t, streamErr.Error(), "options.main")
+}
+
+func TestPolicyMode_MissingPomErrors(t *testing.T) {
+	fixtureDir, err := filepath.Abs("testdata/policy-packs/no-pom")
+	require.NoError(t, err)
+
+	client, cleanup := startInProcessLanguageHost(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, streamErr := runPluginAndDrain(t, ctx, client, fixtureDir)
+	require.Error(t, streamErr)
+	assert.Contains(t, streamErr.Error(), "pom.xml")
+}

@@ -1,0 +1,5 @@
+runtime:
+  name: java
+  options:
+    main: com.example.Pack
+version: 0.0.1
