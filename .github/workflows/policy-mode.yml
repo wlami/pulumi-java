@@ -1,0 +1,52 @@
+name: policy-mode
+
+on:
+  push:
+    branches: [main, feature/language-plugin-policy-mode-mvp]
+    paths:
+      - 'pkg/cmd/pulumi-language-java/**'
+      - '.github/workflows/policy-mode.yml'
+  pull_request:
+    paths:
+      - 'pkg/cmd/pulumi-language-java/**'
+      - '.github/workflows/policy-mode.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pulumi-java (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: pulumi-java
+
+      - name: Checkout wlami/pulumi-policy (Plan A SDK)
+        uses: actions/checkout@v4
+        with:
+          repository: wlami/pulumi-policy
+          ref: feature/java-policy-sdk-mvp
+          path: pulumi-policy
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Install Plan A SDK to local Maven repo
+        working-directory: pulumi-policy/sdk/java
+        run: mvn -q -B -ntp -DskipTests install
+
+      - name: Run unit tests
+        working-directory: pulumi-java
+        run: go test ./pkg/cmd/pulumi-language-java -run 'TestLoadPolicyConfig|TestIsPolicyPack|TestBuildMavenPolicyExecArgs' -v
+
+      - name: Run policy-mode integration test
+        working-directory: pulumi-java
+        run: go test -tags policy_integration ./pkg/cmd/pulumi-language-java -run 'TestPolicyMode_' -v -timeout 5m
