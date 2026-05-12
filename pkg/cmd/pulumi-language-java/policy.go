@@ -92,6 +92,62 @@ func isPolicyPack(dir string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
+// hasGradleProject returns true iff the directory contains a Gradle build
+// file (Groovy or Kotlin DSL).
+func hasGradleProject(dir string) bool {
+	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err == nil && info.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
+}
+
+// buildGradlePolicyExecArgs returns the gradle command line that runs the
+// user's policy pack via a custom 'pulumiPolicyRun' task. The task is
+// injected via an init script (see writePolicyInitScript) so users don't
+// have to edit their build.gradle.kts.
+func buildGradlePolicyExecArgs(projectDir, userEntrypoint string) []string {
+	return []string{
+		"--quiet",
+		"--console=plain",
+		"-p", projectDir,
+		"-PpulumiPolicyMain=" + userEntrypoint,
+		// pulumiPolicyRun is provided by the init script; see runPolicyPack.
+		"pulumiPolicyRun",
+	}
+}
+
+// writePolicyInitScript writes a Gradle init script that injects a
+// 'pulumiPolicyRun' task into the user's project. The task uses the JavaExec
+// type to run com.pulumi.policy.internal.PolicyMain with the user-supplied
+// entrypoint class.
+func writePolicyInitScript(dir string) (string, error) {
+	content := `
+allprojects {
+    afterEvaluate { project ->
+        if (project.plugins.hasPlugin('java') || project.plugins.hasPlugin('java-library')) {
+            project.tasks.register('pulumiPolicyRun', JavaExec) {
+                group = 'pulumi'
+                description = 'Run the Pulumi policy pack via PolicyMain.'
+                mainClass = 'com.pulumi.policy.internal.PolicyMain'
+                args = [project.findProperty('pulumiPolicyMain') ?: '']
+                classpath = project.sourceSets.main.runtimeClasspath
+                standardOutput = System.out
+                errorOutput = System.err
+            }
+        }
+    }
+}
+`
+	scriptPath := filepath.Join(dir, ".pulumi-policy-init.gradle")
+	if err := os.WriteFile(scriptPath, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	return scriptPath, nil
+}
+
 // buildMavenPolicyExecArgs returns the mvn command-line that builds the user's
 // policy-pack project and invokes PolicyMain with the user's entrypoint FQN.
 // The first stdout line from the resulting subprocess is the gRPC port the

@@ -105,3 +105,31 @@ func TestBuildMavenPolicyExecArgs_EscapesUserEntrypointWithSpaces(t *testing.T) 
 	joined := strings.Join(args, " ")
 	assert.Contains(t, joined, "-Dexec.args=com.example.Pack$Inner")
 }
+
+func TestHasGradleProject_GroovyDSL(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "build.gradle"), []byte(""), 0o644))
+	assert.True(t, hasGradleProject(dir))
+}
+
+func TestHasGradleProject_KotlinDSL(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "build.gradle.kts"), []byte(""), 0o644))
+	assert.True(t, hasGradleProject(dir))
+}
+
+func TestHasGradleProject_False(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pom.xml"), []byte(""), 0o644))
+	assert.False(t, hasGradleProject(dir))
+}
+
+func TestBuildGradlePolicyExecArgs(t *testing.T) {
+	args := buildGradlePolicyExecArgs("/abs/project", "com.example.Pack")
+	joined := strings.Join(args, " ")
+	assert.Contains(t, joined, "-p /abs/project")
+	assert.Contains(t, joined, "pulumiPolicyRun")
+	assert.Contains(t, joined, "-PpulumiPolicyMain=com.example.Pack")
+	// Gradle output must go to stderr so stdout stays clean for the port handshake.
+	assert.Contains(t, joined, "--quiet")
+}
