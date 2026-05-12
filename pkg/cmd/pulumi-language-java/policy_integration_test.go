@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"net"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -220,4 +221,52 @@ func TestPolicyMode_MissingPomErrors(t *testing.T) {
 	_, streamErr := runPluginAndDrain(t, ctx, client, fixtureDir)
 	require.Error(t, streamErr)
 	assert.Contains(t, streamErr.Error(), "pom.xml")
+}
+
+func TestPolicyMode_BasicGradle(t *testing.T) {
+	if _, err := exec.LookPath("gradle"); err != nil {
+		t.Skip("gradle not on PATH; skipping basic-gradle policy mode test")
+	}
+
+	fixtureDir, err := filepath.Abs("testdata/policy-packs/basic-gradle")
+	require.NoError(t, err)
+
+	client, cleanup := startInProcessLanguageHost(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	type portResult struct {
+		port int
+		buf  []byte
+		err  error
+	}
+	portCh := make(chan portResult, 1)
+	go func() {
+		p, b, e := runPluginAndCollectPort(t, ctx, client, fixtureDir)
+		portCh <- portResult{p, b, e}
+	}()
+
+	var res portResult
+	select {
+	case res = <-portCh:
+	case <-time.After(150 * time.Second):
+		t.Fatal("timed out waiting for port handshake from gradle policy pack")
+	}
+	require.NoError(t, res.err, "RunPlugin stream error; output so far: %q", res.buf)
+	require.NotZero(t, res.port)
+
+	analyzerConn, err := grpc.NewClient(
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(res.port)),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer analyzerConn.Close()
+
+	analyzer := pulumirpc.NewAnalyzerClient(analyzerConn)
+	info, err := analyzer.GetAnalyzerInfo(ctx, &emptypb.Empty{})
+	require.NoError(t, err)
+	assert.Equal(t, "sample-pack", info.GetName())
+
+	_, _ = analyzer.Cancel(ctx, &emptypb.Empty{})
 }
