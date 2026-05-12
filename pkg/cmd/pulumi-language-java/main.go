@@ -483,6 +483,10 @@ func (host *javaLanguageHost) RunPlugin(
 ) error {
 	logging.V(5).Infof("Attempting to run java plugin in %s", req.Pwd)
 
+	if isPolicyPack(req.Pwd) {
+		return host.runPolicyPack(req, server)
+	}
+
 	closer, stdout, stderr, err := rpcutil.MakeRunPluginStreams(server, false)
 	if err != nil {
 		return err
@@ -1185,4 +1189,68 @@ type POMProject struct {
 	Artifact string `xml:"artifactId"`
 	// The version of the artifact produced by the project, encoded in the `<version>` tag.
 	Version string `xml:"version"`
+}
+
+// runPolicyPack handles RunPlugin requests where req.Pwd contains a
+// PulumiPolicy.yaml manifest. It builds the user's Maven project and
+// launches com.pulumi.policy.internal.PolicyMain against the user's
+// entrypoint class, then forwards the subprocess's stdout (which begins
+// with the gRPC port handshake) and stderr to the engine.
+func (host *javaLanguageHost) runPolicyPack(
+	req *pulumirpc.RunPluginRequest, server pulumirpc.LanguageRuntime_RunPluginServer,
+) error {
+	logging.V(5).Infof("pulumi-language-java: running as policy pack in %s", req.Pwd)
+
+	cfg, err := loadPolicyConfig(req.Pwd)
+	if err != nil {
+		return fmt.Errorf("failed to load policy manifest: %w", err)
+	}
+	if cfg.Runtime.Name != "java" {
+		return fmt.Errorf(
+			"PulumiPolicy.yaml at %s has runtime %q, expected \"java\"",
+			req.Pwd, cfg.Runtime.Name)
+	}
+	if cfg.Runtime.Options.Main == "" {
+		return fmt.Errorf(
+			"PulumiPolicy.yaml at %s is missing runtime.options.main "+
+				"(set to the FQN of your policy pack class)",
+			req.Pwd)
+	}
+
+	pomXMLPath := filepath.Join(req.Pwd, "pom.xml")
+	if _, statErr := os.Stat(pomXMLPath); statErr != nil {
+		return fmt.Errorf(
+			"java policy pack at %s requires pom.xml (gradle support is not yet implemented): %w",
+			req.Pwd, statErr)
+	}
+
+	closer, stdout, stderr, err := rpcutil.MakeRunPluginStreams(server, false)
+	if err != nil {
+		return err
+	}
+	defer closer.Close()
+
+	args := buildMavenPolicyExecArgs(pomXMLPath, cfg.Runtime.Options.Main)
+	logging.V(5).Infof("pulumi-language-java policy mode: mvn %s", strings.Join(args, " "))
+
+	cmd := exec.Command("mvn", args...)
+	cmd.Dir = req.Pwd
+	cmd.Env = req.Env
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	if runErr := cmd.Run(); runErr != nil {
+		var exiterr *exec.ExitError
+		if errors.As(runErr, &exiterr) {
+			if status, ok := exiterr.Sys().(syscall.WaitStatus); ok {
+				return server.Send(&pulumirpc.RunPluginResponse{
+					//nolint:gosec // WaitStatus always uses the lower 8 bits for the exit code.
+					Output: &pulumirpc.RunPluginResponse_Exitcode{Exitcode: int32(status.ExitStatus())},
+				})
+			}
+		}
+		return fmt.Errorf("policy pack process failed: %w", runErr)
+	}
+
+	return closer.Close()
 }
