@@ -91,3 +91,26 @@ func isPolicyPack(dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, manifestFileName))
 	return err == nil && info.Mode().IsRegular()
 }
+
+// buildMavenPolicyExecArgs returns the mvn command-line that builds the user's
+// policy-pack project and invokes PolicyMain with the user's entrypoint FQN.
+// The first stdout line from the resulting subprocess is the gRPC port the
+// AnalyzerServer started on - the rest of the language plugin's RunPlugin
+// flow handles port-line forwarding to the engine.
+//
+// Mirrors the layout used by executor_maven.go:73-80 for normal programs,
+// but overrides exec.mainClass.
+func buildMavenPolicyExecArgs(pomXMLPath, userEntrypoint string) []string {
+	return []string{
+		// only output warning or higher to reduce noise
+		"-Dorg.slf4j.simpleLogger.defaultLogLevel=warn",
+		// keep stdout clean for the port handshake; mvn's normal output goes to stderr
+		"-Dorg.slf4j.simpleLogger.logFile=System.err",
+		"--no-transfer-progress",
+		"compile",
+		"exec:java",
+		"-f", pomXMLPath,
+		"-Dexec.mainClass=com.pulumi.policy.internal.PolicyMain",
+		fmt.Sprintf("-Dexec.args=%s", userEntrypoint),
+	}
+}

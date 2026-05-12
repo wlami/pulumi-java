@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -80,4 +81,27 @@ func TestIsPolicyPack_FalseOnDirectoryAtPath(t *testing.T) {
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "PulumiPolicy.yaml"), 0o755))
 	// A directory named PulumiPolicy.yaml is not a manifest.
 	assert.False(t, isPolicyPack(dir))
+}
+
+func TestBuildMavenPolicyExecArgs(t *testing.T) {
+	args := buildMavenPolicyExecArgs("/abs/path/to/pom.xml", "com.example.Pack")
+
+	// Sanity: contains the key flags. Don't assert exact ordering of all
+	// boilerplate flags - just the load-bearing ones.
+	joined := strings.Join(args, " ")
+	assert.Contains(t, joined, "compile")
+	assert.Contains(t, joined, "exec:java")
+	assert.Contains(t, joined, "-f /abs/path/to/pom.xml")
+	assert.Contains(t, joined, "-Dexec.mainClass=com.pulumi.policy.internal.PolicyMain")
+	assert.Contains(t, joined, "-Dexec.args=com.example.Pack")
+	// Log output diverted from stdout (which must stay clean for the port handshake)
+	assert.Contains(t, joined, "logFile=System.err")
+}
+
+func TestBuildMavenPolicyExecArgs_EscapesUserEntrypointWithSpaces(t *testing.T) {
+	// Defensive: should never happen (FQNs don't contain spaces) but make sure
+	// nothing in the build raises eyebrows.
+	args := buildMavenPolicyExecArgs("/p.xml", "com.example.Pack$Inner")
+	joined := strings.Join(args, " ")
+	assert.Contains(t, joined, "-Dexec.args=com.example.Pack$Inner")
 }
