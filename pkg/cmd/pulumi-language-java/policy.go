@@ -13,12 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
-	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -265,73 +260,18 @@ func touchBuildMarker(dir string) error {
 	return os.Chtimes(markerPath, now, now)
 }
 
-// JDK 23 introduced the "terminally deprecated sun.misc.Unsafe::objectFieldOffset"
-// warning that grpc-netty-shaded triggers at server-startup. Suppressing it
-// requires the JVM flag --sun-misc-unsafe-memory-access=allow, which is also
-// only recognised on JDK 23+. Older JDKs reject the unknown flag.
+// policyJvmFlagsEnv returns env-var entries to merge into the policy-pack
+// subprocess environment. The flags steer grpc-netty-shaded's Netty away from
+// its Unsafe-based code paths so JDK 23+ doesn't print the
+// "terminally deprecated sun.misc.Unsafe" warning at server startup.
 //
-// We detect the JDK major version once per process by parsing `java -version`.
-var (
-	javaMajorOnce sync.Once
-	javaMajor     int
-)
-
-// javaMajorVersion returns the major JDK version reported by `java -version`
-// on PATH, or 0 if it can't be detected. The result is memoized so successive
-// calls are cheap.
-func javaMajorVersion() int {
-	javaMajorOnce.Do(func() {
-		out, err := exec.Command("java", "-version").CombinedOutput()
-		if err != nil {
-			javaMajor = 0
-			return
-		}
-		// `java -version` prints to stderr in the form:
-		//   openjdk version "17.0.10" 2024-01-16
-		//   openjdk version "1.8.0_392"
-		//   openjdk version "21" 2023-09-19
-		// Match the version inside quotes; the major component is the part
-		// before the first dot, or the whole string if no dot is present.
-		// On Java 8 the "1.8" form means major 8.
-		re := regexp.MustCompile(`version "([^"]+)"`)
-		m := re.FindStringSubmatch(string(out))
-		if m == nil {
-			javaMajor = 0
-			return
-		}
-		ver := m[1]
-		// Java 8 form: "1.8.0_392"
-		if strings.HasPrefix(ver, "1.") {
-			ver = ver[2:]
-		}
-		// Take the part before the first dot.
-		if i := strings.IndexAny(ver, "._-"); i >= 0 {
-			ver = ver[:i]
-		}
-		n, parseErr := strconv.Atoi(ver)
-		if parseErr != nil {
-			javaMajor = 0
-			return
-		}
-		javaMajor = n
-	})
-	return javaMajor
-}
-
-// policyJvmFlagsEnv returns env-var entries (KEY=value) that should be merged
-// into the mvn subprocess environment to make grpc-netty-shaded's startup
-// quiet on JDK 23+. Returns nil on older JDKs where the flag is unrecognised.
+// io.netty.noUnsafe is a real Netty feature switch (not a warning-suppression
+// flag): when set, Netty uses VarHandle-based memory access throughout. The
+// property must be visible to the JVM before any io.netty.* class loads,
+// which is why we set it as a -D system-property via MAVEN_OPTS / GRADLE_OPTS
+// rather than from inside PolicyMain.main.
 func policyJvmFlagsEnv() []string {
-	if javaMajorVersion() < 23 {
-		return nil
-	}
-	const flag = "--sun-misc-unsafe-memory-access=allow"
-	// Use MAVEN_OPTS rather than JAVA_TOOL_OPTIONS: the latter triggers the
-	// JVM's "Picked up JAVA_TOOL_OPTIONS: ..." acknowledgment line on every
-	// JVM start, which is itself noise. MAVEN_OPTS applies to mvn's JVM and
-	// (via process reuse) to exec:java's user code path without that
-	// acknowledgment. Also forward into GRADLE_OPTS so the gradle path picks
-	// up the same flag.
+	const flag = "-Dio.netty.noUnsafe=true"
 	return []string{
 		"MAVEN_OPTS=" + flag,
 		"GRADLE_OPTS=" + flag,

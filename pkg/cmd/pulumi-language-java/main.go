@@ -1284,8 +1284,9 @@ func (host *javaLanguageHost) runPolicyPack(
 	// stale. This lets us touch the build marker as soon as compilation succeeds
 	// and before starting the long-lived exec:java gRPC server (which never exits
 	// normally and therefore cannot be used to signal that a build completed).
-	// Inject JVM flags that silence JDK 23+ Unsafe deprecation warnings emitted
-	// by grpc-netty-shaded at server startup. No-op on older JDKs.
+	// Steer Netty (via grpc-netty-shaded) away from sun.misc.Unsafe so JDK 23+
+	// doesn't emit a deprecation warning at server startup. Set as -D before
+	// JVM start.
 	policyEnv := append([]string{}, req.Env...)
 	policyEnv = append(policyEnv, policyJvmFlagsEnv()...)
 
