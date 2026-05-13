@@ -61,3 +61,4 @@ pulumi-analyzer-policy-python.cmd
 /go.work.sum
 **/build/
 **/target/
+/pulumi-language-java
