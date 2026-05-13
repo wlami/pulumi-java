@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -221,6 +222,52 @@ func TestPolicyMode_MissingPomErrors(t *testing.T) {
 	_, streamErr := runPluginAndDrain(t, ctx, client, fixtureDir)
 	require.Error(t, streamErr)
 	assert.Contains(t, streamErr.Error(), "pom.xml")
+}
+
+func TestPolicyMode_BuildCacheSkipsRebuild(t *testing.T) {
+	if _, err := exec.LookPath("mvn"); err != nil {
+		t.Skip("mvn not on PATH; skipping cache test")
+	}
+
+	fixtureDir, err := filepath.Abs("testdata/policy-packs/basic-maven")
+	require.NoError(t, err)
+	// Remove any leftover marker from a prior run to ensure a cold start.
+	_ = os.Remove(filepath.Join(fixtureDir, ".pulumi-policy-build-marker"))
+	defer os.Remove(filepath.Join(fixtureDir, ".pulumi-policy-build-marker"))
+
+	run := func(timeout time.Duration) time.Duration {
+		client, cleanup := startInProcessLanguageHost(t)
+		defer cleanup()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		start := time.Now()
+		port, buf, streamErr := runPluginAndCollectPort(t, ctx, client, fixtureDir)
+		require.NoError(t, streamErr, "RunPlugin stream error; stdout so far: %q", buf)
+		require.NotZero(t, port, "no port found in stdout: %q", buf)
+		// Cancel quickly; we only care about the build/handshake time.
+		conn, err := grpc.NewClient(net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+			grpc.WithTransportCredentials(insecure.NewCredentials()))
+		require.NoError(t, err)
+		defer conn.Close()
+		analyzer := pulumirpc.NewAnalyzerClient(conn)
+		_, _ = analyzer.Cancel(ctx, &emptypb.Empty{})
+		return time.Since(start)
+	}
+
+	cold := run(120 * time.Second)
+	t.Logf("cold run: %v", cold)
+	require.FileExists(t, filepath.Join(fixtureDir, ".pulumi-policy-build-marker"),
+		"marker should exist after the first successful run")
+
+	warm := run(60 * time.Second)
+	t.Logf("warm run: %v", warm)
+
+	// The warm run should be at least 30% faster. This is a loose bound to
+	// avoid flakiness in CI; the real signal is in the log message above.
+	require.Less(t, warm, cold*7/10,
+		"warm run (%v) should be substantially faster than cold (%v) when build cache hits",
+		warm, cold)
 }
 
 func TestPolicyMode_BasicGradle(t *testing.T) {

@@ -154,6 +154,20 @@ allprojects {
 	return f.Name(), nil
 }
 
+// buildMavenCompileArgs returns the mvn command-line that compiles the user's
+// policy-pack project without launching a long-lived process. It is run as a
+// short-lived subprocess before the exec:java server phase so that the build
+// marker can be written as soon as compilation succeeds.
+func buildMavenCompileArgs(pomXMLPath string) []string {
+	return []string{
+		"-Dorg.slf4j.simpleLogger.defaultLogLevel=warn",
+		"-Dorg.slf4j.simpleLogger.logFile=System.err",
+		"--no-transfer-progress",
+		"compile",
+		"-f", pomXMLPath,
+	}
+}
+
 // buildMavenPolicyExecArgs returns the mvn command-line that builds the user's
 // policy-pack project and invokes PolicyMain with the user's entrypoint FQN.
 // The first stdout line from the resulting subprocess is the gRPC port the
