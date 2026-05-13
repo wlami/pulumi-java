@@ -1231,6 +1231,13 @@ func (host *javaLanguageHost) runPolicyPack(
 			packDir)
 	}
 
+	rebuild, rebuildErr := needsRebuild(packDir)
+	if rebuildErr != nil {
+		logging.V(5).Infof("pulumi-language-java policy mode: needsRebuild failed (will rebuild): %v", rebuildErr)
+		rebuild = true
+	}
+	logging.V(5).Infof("pulumi-language-java policy mode: needsRebuild=%v", rebuild)
+
 	var (
 		executable string
 		args       []string
@@ -1238,10 +1245,23 @@ func (host *javaLanguageHost) runPolicyPack(
 	)
 	if _, statErr := os.Stat(filepath.Join(packDir, "pom.xml")); statErr == nil {
 		executable = "mvn"
-		args = buildMavenPolicyExecArgs(
-			filepath.Join(packDir, "pom.xml"),
-			cfg.Runtime.Options.Main,
-		)
+		if !rebuild {
+			// Skip the `compile` goal; just exec:java the cached target/.
+			args = []string{
+				"-Dorg.slf4j.simpleLogger.defaultLogLevel=warn",
+				"-Dorg.slf4j.simpleLogger.logFile=System.err",
+				"--no-transfer-progress",
+				"exec:java",
+				"-f", filepath.Join(packDir, "pom.xml"),
+				"-Dexec.mainClass=com.pulumi.policy.internal.PolicyMain",
+				fmt.Sprintf("-Dexec.args=%s", cfg.Runtime.Options.Main),
+			}
+		} else {
+			args = buildMavenPolicyExecArgs(
+				filepath.Join(packDir, "pom.xml"),
+				cfg.Runtime.Options.Main,
+			)
+		}
 	} else if hasGradleProject(packDir) {
 		var ierr error
 		initScript, ierr = writePolicyInitScript(packDir)
@@ -1288,6 +1308,10 @@ func (host *javaLanguageHost) runPolicyPack(
 			}
 		}
 		return fmt.Errorf("policy pack process failed: %w", runErr)
+	}
+
+	if err := touchBuildMarker(packDir); err != nil {
+		logging.V(5).Infof("pulumi-language-java policy mode: touchBuildMarker failed: %v", err)
 	}
 
 	return closer.Close()
