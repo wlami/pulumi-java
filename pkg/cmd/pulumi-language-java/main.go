@@ -1284,12 +1284,17 @@ func (host *javaLanguageHost) runPolicyPack(
 	// stale. This lets us touch the build marker as soon as compilation succeeds
 	// and before starting the long-lived exec:java gRPC server (which never exits
 	// normally and therefore cannot be used to signal that a build completed).
+	// Inject JVM flags that silence JDK 23+ Unsafe deprecation warnings emitted
+	// by grpc-netty-shaded at server startup. No-op on older JDKs.
+	policyEnv := append([]string{}, req.Env...)
+	policyEnv = append(policyEnv, policyJvmFlagsEnv()...)
+
 	if isMaven && rebuild {
 		compileArgs := buildMavenCompileArgs(filepath.Join(packDir, "pom.xml"))
 		logging.V(5).Infof("pulumi-language-java policy mode: mvn %s", strings.Join(compileArgs, " "))
 		compileCmd := exec.Command("mvn", compileArgs...)
 		compileCmd.Dir = packDir
-		compileCmd.Env = req.Env
+		compileCmd.Env = policyEnv
 		// Compile output goes to stderr only; stdout must stay clean for the
 		// port-number handshake that follows once the gRPC server starts.
 		compileCmd.Stdout = io.Discard
@@ -1321,7 +1326,7 @@ func (host *javaLanguageHost) runPolicyPack(
 
 	cmd := exec.Command(executable, args...)
 	cmd.Dir = packDir
-	cmd.Env = req.Env
+	cmd.Env = policyEnv
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
