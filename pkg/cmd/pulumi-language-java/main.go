@@ -1231,34 +1231,27 @@ func (host *javaLanguageHost) runPolicyPack(
 			packDir)
 	}
 
-	rebuild, rebuildErr := needsRebuild(packDir)
-	if rebuildErr != nil {
-		logging.V(5).Infof("pulumi-language-java policy mode: needsRebuild failed (will rebuild): %v", rebuildErr)
-		rebuild = true
-	}
-	logging.V(5).Infof("pulumi-language-java policy mode: needsRebuild=%v", rebuild)
-
-	isMaven := false
 	var (
 		executable string
 		args       []string
 		initScript string
 	)
 	if _, statErr := os.Stat(filepath.Join(packDir, "pom.xml")); statErr == nil {
-		isMaven = true
 		executable = "mvn"
-		// Maven uses two phases: compile (short-lived, skippable) then exec:java
-		// (long-lived gRPC server). We set args to the exec:java phase here and
-		// handle the compile phase below, before starting streams.
-		args = []string{
-			"-Dorg.slf4j.simpleLogger.defaultLogLevel=warn",
-			"-Dorg.slf4j.simpleLogger.logFile=System.err",
-			"--no-transfer-progress",
-			"exec:java",
-			"-f", filepath.Join(packDir, "pom.xml"),
-			"-Dexec.mainClass=com.pulumi.policy.internal.PolicyMain",
-			fmt.Sprintf("-Dexec.args=%s", cfg.Runtime.Options.Main),
-		}
+		// Single `mvn compile exec:java` invocation - one JVM startup, one
+		// dependency resolution pass. The `compile` phase is required for
+		// exec-maven-plugin 3.3.0 to populate the effective project model
+		// before reading -Dexec.mainClass; running just `exec:java -D...`
+		// fails with "The parameters 'mainClass' ... are missing or invalid".
+		// Maven skips compile when target/ is already up-to-date so this
+		// path is fast on subsequent runs.
+		//
+		// The Plan D Phase 5 build-cache (separate mvn compile + marker
+		// touch) was reverted: dual mvn invocations pushed first-run startup
+		// past the engine's plugin-handshake deadline. The needsRebuild and
+		// touchBuildMarker helpers remain in policy.go for a future cleaner
+		// cache implementation.
+		args = buildMavenPolicyExecArgs(filepath.Join(packDir, "pom.xml"), cfg.Runtime.Options.Main)
 	} else if hasGradleProject(packDir) {
 		var ierr error
 		initScript, ierr = writePolicyInitScript(packDir)
@@ -1280,42 +1273,12 @@ func (host *javaLanguageHost) runPolicyPack(
 		}
 	}()
 
-	// Maven: run compile as a separate short-lived subprocess when sources are
-	// stale. This lets us touch the build marker as soon as compilation succeeds
-	// and before starting the long-lived exec:java gRPC server (which never exits
-	// normally and therefore cannot be used to signal that a build completed).
-	// Steer Netty (via grpc-netty-shaded) away from sun.misc.Unsafe so JDK 23+
-	// doesn't emit a deprecation warning at server startup. Set as -D before
-	// JVM start.
+	// Steer Netty (via grpc-netty-shaded) away from sun.misc.Unsafe at JVM
+	// startup. Does not silence the JDK 23+ Unsafe deprecation warning today
+	// (Netty's static-init probe predates the property check) but flips the
+	// switch for Netty's hot-path memory access.
 	policyEnv := append([]string{}, req.Env...)
 	policyEnv = append(policyEnv, policyJvmFlagsEnv()...)
-
-	if isMaven && rebuild {
-		compileArgs := buildMavenCompileArgs(filepath.Join(packDir, "pom.xml"))
-		logging.V(5).Infof("pulumi-language-java policy mode: mvn %s", strings.Join(compileArgs, " "))
-		compileCmd := exec.Command("mvn", compileArgs...)
-		compileCmd.Dir = packDir
-		compileCmd.Env = policyEnv
-		// Compile output goes to stderr only; stdout must stay clean for the
-		// port-number handshake that follows once the gRPC server starts.
-		compileCmd.Stdout = io.Discard
-		compileCmd.Stderr = io.Discard
-		if compileErr := compileCmd.Run(); compileErr != nil {
-			var exiterr *exec.ExitError
-			if errors.As(compileErr, &exiterr) {
-				if status, ok := exiterr.Sys().(syscall.WaitStatus); ok {
-					return server.Send(&pulumirpc.RunPluginResponse{
-						//nolint:gosec // WaitStatus always uses the lower 8 bits for the exit code.
-						Output: &pulumirpc.RunPluginResponse_Exitcode{Exitcode: int32(status.ExitStatus())},
-					})
-				}
-			}
-			return fmt.Errorf("policy pack compile failed: %w", compileErr)
-		}
-		if markerErr := touchBuildMarker(packDir); markerErr != nil {
-			logging.V(5).Infof("pulumi-language-java policy mode: touchBuildMarker failed: %v", markerErr)
-		}
-	}
 
 	closer, stdout, stderr, err := rpcutil.MakeRunPluginStreams(server, false)
 	if err != nil {
