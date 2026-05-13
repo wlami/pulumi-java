@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -174,4 +175,73 @@ func buildMavenPolicyExecArgs(pomXMLPath, userEntrypoint string) []string {
 		"-Dexec.mainClass=com.pulumi.policy.internal.PolicyMain",
 		fmt.Sprintf("-Dexec.args=%s", userEntrypoint),
 	}
+}
+
+const buildMarkerName = ".pulumi-policy-build-marker"
+
+// needsRebuild returns true iff the policy pack at dir needs a fresh build.
+// It is true when the build marker is missing, or when any source file
+// (under src/, plus pom.xml or build.gradle{,.kts} at dir root) has been
+// modified more recently than the marker.
+func needsRebuild(dir string) (bool, error) {
+	markerPath := filepath.Join(dir, buildMarkerName)
+	markerInfo, err := os.Stat(markerPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true, nil
+		}
+		return false, err
+	}
+	markerMtime := markerInfo.ModTime()
+
+	// Check pom.xml / build.gradle(.kts) at dir root.
+	for _, name := range []string{"pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(markerMtime) {
+			return true, nil
+		}
+	}
+
+	// Walk src/ for any newer file.
+	srcDir := filepath.Join(dir, "src")
+	stale := false
+	walkErr := filepath.Walk(srcDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			if errors.Is(walkErr, os.ErrNotExist) {
+				return nil
+			}
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if info.ModTime().After(markerMtime) {
+			stale = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil && !errors.Is(walkErr, os.ErrNotExist) {
+		return false, walkErr
+	}
+	return stale, nil
+}
+
+// touchBuildMarker creates or refreshes the marker file at dir/.pulumi-policy-build-marker
+// to record a successful build.
+func touchBuildMarker(dir string) error {
+	markerPath := filepath.Join(dir, buildMarkerName)
+	f, err := os.OpenFile(markerPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// Ensure mtime is now even if the file already existed.
+	now := time.Now()
+	return os.Chtimes(markerPath, now, now)
 }

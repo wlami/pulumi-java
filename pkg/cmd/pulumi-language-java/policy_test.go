@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -132,4 +133,47 @@ func TestBuildGradlePolicyExecArgs(t *testing.T) {
 	assert.Contains(t, joined, "-PpulumiPolicyMain=com.example.Pack")
 	// Gradle output must go to stderr so stdout stays clean for the port handshake.
 	assert.Contains(t, joined, "--quiet")
+}
+
+func TestNeedsRebuild_NoMarker(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src/a.java"), []byte(""), 0o644))
+	rebuild, err := needsRebuild(dir)
+	require.NoError(t, err)
+	assert.True(t, rebuild, "no marker → must rebuild")
+}
+
+func TestNeedsRebuild_MarkerNewerThanSources(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src/a.java"), []byte(""), 0o644))
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, touchBuildMarker(dir))
+	rebuild, err := needsRebuild(dir)
+	require.NoError(t, err)
+	assert.False(t, rebuild, "marker newer than sources → skip rebuild")
+}
+
+func TestNeedsRebuild_SourceModifiedAfterMarker(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src/a.java"), []byte(""), 0o644))
+	require.NoError(t, touchBuildMarker(dir))
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src/a.java"), []byte("changed"), 0o644))
+	rebuild, err := needsRebuild(dir)
+	require.NoError(t, err)
+	assert.True(t, rebuild, "source changed after marker → must rebuild")
+}
+
+func TestNeedsRebuild_PomChangedAfterMarker(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pom.xml"), []byte("<?xml?>"), 0o644))
+	require.NoError(t, touchBuildMarker(dir))
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pom.xml"), []byte("<?xml?>\n<!-- changed -->"), 0o644))
+	rebuild, err := needsRebuild(dir)
+	require.NoError(t, err)
+	assert.True(t, rebuild, "pom.xml changed after marker → must rebuild")
 }
