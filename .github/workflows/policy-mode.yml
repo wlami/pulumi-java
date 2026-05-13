@@ -2,7 +2,7 @@ name: policy-mode
 
 on:
   push:
-    branches: [main, feature/language-plugin-policy-mode-mvp, feature/language-plugin-policy-mode-gradle]
+    branches: [main, feature/language-plugin-policy-mode-mvp, feature/language-plugin-policy-mode-gradle, feature/language-plugin-policy-mode-build-cache]
     paths:
       - 'pkg/cmd/pulumi-language-java/**'
       - '.github/workflows/policy-mode.yml'
